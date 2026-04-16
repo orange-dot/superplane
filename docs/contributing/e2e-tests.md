@@ -24,8 +24,9 @@ Before running the tests, run the setup steps:
 
 ```
 make test.setup
-make setup.playwright
 ```
+
+`make test.setup` uses the supported Docker Compose test workflow and prepares the local services and test databases needed for E2E runs. The test stack stays on the internal Compose network, so it does not need to bind the normal development host ports.
 
 To run all e2e tests (takes 20m+):
 

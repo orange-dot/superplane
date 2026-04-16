@@ -1,0 +1,17 @@
+services:
+  app:
+    environment:
+      AGENT_HTTP_URL: http://agent:8090
+    ports: !reset []
+
+  agent:
+    ports: !reset []
+
+  otel:
+    ports: !reset []
+
+  pgweb:
+    ports: !reset []
+
+  rabbitmq:
+    ports: !reset []

@@ -55,6 +55,21 @@ docker run --rm -p 3000:3000 -v spdata:/app/data -ti ghcr.io/superplanehq/superp
 
 Then open [http://localhost:3000](http://localhost:3000) and follow the [quick start guide](https://docs.superplane.com/get-started/quickstart/).
 
+## Local test workflow
+
+The supported local test path is containerized. Use the repo's Docker Compose and Make targets instead of host-native PostgreSQL or a host Python virtualenv.
+
+Common commands:
+
+```bash
+make test.setup
+make test
+make test.agent.unit
+make test.local.full
+```
+
+`make test.setup` bootstraps the local test environment, including the `superplane_test` and `agents_test` databases. The test targets layer a test-only Compose override that keeps these services on the internal Docker network, so they do not need to claim the normal dev host ports. `make test.local.full` is the one-command path to run the backend Go tests and agent unit tests together.
+
 ## Supported Integrations
 
 SuperPlane integrates with the tools you already use. Each integration provides triggers (events that start workflows) and components (actions you can run).
