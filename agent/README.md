@@ -11,6 +11,7 @@ Starting points:
 - Run a subset by case `name` from `evals/cases.py` (comma-separated; one or many): `make test.agent.evals CASES=github_and_slack` or `CASES=github_and_slack,manual_run_then_two_noops`
 - List eval case names: `make test.agent.evals AGENT_EVAL_RUNNER_ARGS=--list-cases`
 - Run unit tests with `make test.agent.unit`
+- The supported local path is containerized: use `make test.agent.setup` and `make test.agent.unit`, not a host `.venv`
 - Lint with `make -C agent lint` (auto-fix: `make -C agent lint.fix`)
 - Format with `make -C agent format` (check only: `make -C agent format.check`)
 - Type check with `make -C agent typecheck`

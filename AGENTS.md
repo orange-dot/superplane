@@ -19,10 +19,14 @@
 
 - Setup dev environment: `make dev.setup`
 - Run server: `make dev.start` - UI at http://localhost:8000
+- Canonical local test path is containerized via `docker compose -f docker-compose.dev.yml`; do not rely on host-native Postgres or a host Python virtualenv for standard repo tests
+- Bootstrap the local test environment with `make test.setup`
+- Run the full local backend + agent verification flow with `make test.local.full`
 - One-shot backend tests: `make test` (Golang).
 - Targeted backend tests: `make test PKG_TEST_PACKAGES=./pkg/workers`
-- Targeted E2E tests: `make e2e E2E_TEST_PACKAGES=./test/e2e/workflows`
-- For E2E test authoring, see [docs/development/e2e_tests.md](docs/development/e2e_tests.md)
+- Agent unit tests: `make test.agent.unit`
+- Targeted E2E tests: `make test.e2e E2E_TEST_PACKAGES=./test/e2e/workflows`
+- For E2E test authoring, see [docs/contributing/e2e-tests.md](docs/contributing/e2e-tests.md)
 - After updating UI code, always run `make check.build.ui` to verify everything is correct
 - After editing JS code, always run `make format.js` to make sure that the files are consistently formatted
 - After editing Golang code, always run `make format.go` to make sure that files are consistently formatted

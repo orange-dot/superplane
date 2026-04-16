@@ -1,6 +1,6 @@
 .PHONY: db.create db.delete db.migration.create db.migrate lint lint.fix format format.check typecheck
 
-COMPOSE=docker compose -f ../docker-compose.dev.yml
+COMPOSE ?= docker compose -f ../docker-compose.dev.yml
 DB_NAME ?= agents_dev
 DB_PASSWORD ?= the-cake-is-a-lie
 

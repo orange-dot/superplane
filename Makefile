@@ -1,4 +1,4 @@
-.PHONY: lint test test.coverage test.license.check test.agent.unit test.agent.setup
+.PHONY: lint test test.coverage test.license.check test.agent.unit test.agent.setup test.prepare.files test.preflight test.setup test.local.full
 
 DB_NAME=superplane
 DB_PASSWORD=the-cake-is-a-lie
@@ -10,7 +10,9 @@ PKG_TEST_PACKAGES := ./pkg/...
 E2E_TEST_PACKAGES := ./test/e2e/...
 AGENT_TEST_TARGETS ?= tests
 
-COMPOSE=docker compose -f docker-compose.dev.yml
+COMPOSE ?= docker compose -f docker-compose.dev.yml
+TEST_COMPOSE ?= docker compose -f docker-compose.dev.yml -f docker-compose.test.yml
+AGENT_TEST_COMPOSE ?= docker compose -f ../docker-compose.dev.yml -f ../docker-compose.test.yml
 
 #
 # Long sausage command to run tests with gotestsum
@@ -20,11 +22,18 @@ COMPOSE=docker compose -f docker-compose.dev.yml
 # - exports junit report
 # - sets parallelism to 1
 #
-GOTESTSUM=$(COMPOSE) run --rm -e DB_NAME=superplane_test -v $(PWD)/tmp/screenshots:/app/test/screenshots app gotestsum --format short --junitfile junit-report.xml 
+TEST_GOTESTSUM=$(TEST_COMPOSE) run --rm -e DB_NAME=superplane_test -v $(PWD)/tmp/screenshots:/app/test/screenshots app gotestsum --format short --junitfile junit-report.xml 
 
 #
 # Targets for test environment
 #
+
+test.prepare.files:
+	@touch agent/.env
+	@mkdir -p tmp/screenshots
+
+test.preflight: test.prepare.files
+	@bash ./scripts/test_preflight.sh
 
 lint:
 	$(COMPOSE) exec app revive -formatter friendly -config lint.toml -exclude ./tmp/... ./...
@@ -32,44 +41,45 @@ lint:
 tidy:
 	$(COMPOSE) exec app go mod tidy
 
-test.setup.build:
-	@touch agent/.env
+test.setup.build: test.preflight
 	@if [ -d "tmp/screenshots" ]; then rm -rf tmp/screenshots; fi
 	@mkdir -p tmp/screenshots
-	$(COMPOSE) build --pull
-	$(COMPOSE) run --rm app go mod download
+	$(TEST_COMPOSE) build --pull
+	$(TEST_COMPOSE) run --rm --no-deps app go mod download
 
-test.setup.db:
-	$(MAKE) db.create DB_NAME=superplane_test
-	$(MAKE) db.migrate DB_NAME=superplane_test
-	$(MAKE) -C agent db.create DB_NAME=agents_test DB_PASSWORD=$(DB_PASSWORD)
-	$(MAKE) -C agent db.migrate DB_NAME=agents_test DB_PASSWORD=$(DB_PASSWORD)
+test.setup.db: test.start
+	$(MAKE) db.create DB_NAME=superplane_test COMPOSE='$(TEST_COMPOSE)'
+	$(MAKE) db.migrate DB_NAME=superplane_test COMPOSE='$(TEST_COMPOSE)'
+	$(MAKE) -C agent db.create DB_NAME=agents_test DB_PASSWORD=$(DB_PASSWORD) COMPOSE='$(AGENT_TEST_COMPOSE)'
+	$(MAKE) -C agent db.migrate DB_NAME=agents_test DB_PASSWORD=$(DB_PASSWORD) COMPOSE='$(AGENT_TEST_COMPOSE)'
 
-test.start:
-	$(COMPOSE) up -d --wait
+test.setup: test.setup.build test.start test.setup.db
+
+test.start: test.preflight
+	$(TEST_COMPOSE) up -d --wait
 
 test.down:
-	$(COMPOSE) down --remove-orphans
+	$(TEST_COMPOSE) down --remove-orphans
 
 test.e2e.setup:
 	$(MAKE) test.setup
-	$(COMPOSE) exec app bash -c "cd web_src && npm ci"
+	$(TEST_COMPOSE) exec app bash -c "cd web_src && npm ci"
 
 test.e2e:
-	$(COMPOSE) exec app gotestsum --format short --junitfile junit-report.xml --rerun-fails=3 --rerun-fails-max-failures=1 --packages="$(E2E_TEST_PACKAGES)" -- -p 1
+	$(TEST_COMPOSE) exec app gotestsum --format short --junitfile junit-report.xml --rerun-fails=3 --rerun-fails-max-failures=1 --packages="$(E2E_TEST_PACKAGES)" -- -p 1
 
 test.e2e.autoparallel:
-	$(COMPOSE) exec -e INDEX -e TOTAL app bash -lc "cd /app && bash scripts/test_e2e_autoparallel.sh"
+	$(TEST_COMPOSE) exec -e INDEX -e TOTAL app bash -lc "cd /app && bash scripts/test_e2e_autoparallel.sh"
 
 test.e2e.single:
 	bash ./scripts/vscode_run_tests.sh line $(FILE) $(LINE)
 
-test:
-	$(GOTESTSUM) --packages="$(PKG_TEST_PACKAGES)" -- -p 1
+test: test.preflight test.start test.setup.db
+	$(TEST_GOTESTSUM) --packages="$(PKG_TEST_PACKAGES)" -- -p 1
 
-test.coverage:
-	$(GOTESTSUM) --packages="$(PKG_TEST_PACKAGES)" -- -p 1 -coverprofile=coverage-go.out -covermode=atomic
-	$(COMPOSE) run --rm app go tool cover -func=coverage-go.out | grep '^total:'
+test.coverage: test.preflight test.start test.setup.db
+	$(TEST_GOTESTSUM) --packages="$(PKG_TEST_PACKAGES)" -- -p 1 -coverprofile=coverage-go.out -covermode=atomic
+	$(TEST_COMPOSE) run --rm --no-deps app go tool cover -func=coverage-go.out | grep '^total:'
 
 test.coverage.check:
 	$(MAKE) test.coverage
@@ -82,26 +92,28 @@ test.coverage.baseline.update:
 test.license.check:
 	bash ./scripts/license-check.sh
 
-test.watch:
-	$(GOTESTSUM) --packages="$(PKG_TEST_PACKAGES)" --watch -- -p 1
+test.watch: test.preflight test.start test.setup.db
+	$(TEST_GOTESTSUM) --packages="$(PKG_TEST_PACKAGES)" --watch -- -p 1
 
 # Subset: CASES=comma-separated names from agent/evals/cases.py (optional).
 test.agent.evals:
-	$(COMPOSE) exec $(if $(CASES),-e CASES=$(CASES),) agent uv run python -m evals.runner $(AGENT_EVAL_RUNNER_ARGS)
+	$(TEST_COMPOSE) exec $(if $(CASES),-e CASES=$(CASES),) agent uv run python -m evals.runner $(AGENT_EVAL_RUNNER_ARGS)
 
-test.agent.setup:
-	@touch agent/.env
-	$(COMPOSE) build app agent
-	$(COMPOSE) up -d db
-	sleep 5
-	$(MAKE) -C agent db.create DB_NAME=agents_test DB_PASSWORD=$(DB_PASSWORD)
-	$(MAKE) -C agent db.migrate DB_NAME=agents_test DB_PASSWORD=$(DB_PASSWORD)
+test.agent.setup: test.preflight
+	$(TEST_COMPOSE) build app agent
+	$(TEST_COMPOSE) up -d --wait db
+	$(MAKE) -C agent db.create DB_NAME=agents_test DB_PASSWORD=$(DB_PASSWORD) COMPOSE='$(AGENT_TEST_COMPOSE)'
+	$(MAKE) -C agent db.migrate DB_NAME=agents_test DB_PASSWORD=$(DB_PASSWORD) COMPOSE='$(AGENT_TEST_COMPOSE)'
 
-test.agent.unit:
-	$(COMPOSE) run --rm -e DB_NAME=agents_test agent uv run --group dev python -m pytest $(AGENT_TEST_TARGETS)
+test.agent.unit: test.preflight test.start test.setup.db
+	$(TEST_COMPOSE) run --rm -e DB_NAME=agents_test agent uv run --group dev python -m pytest $(AGENT_TEST_TARGETS)
+
+test.local.full: test.setup
+	$(TEST_GOTESTSUM) --packages="$(PKG_TEST_PACKAGES)" -- -p 1
+	$(TEST_COMPOSE) run --rm -e DB_NAME=agents_test agent uv run --group dev python -m pytest $(AGENT_TEST_TARGETS)
 
 test.shell:
-	$(COMPOSE) run --rm -e DB_NAME=superplane_test -v $(PWD)/tmp/screenshots:/app/test/screenshots app /bin/bash	
+	$(TEST_COMPOSE) run --rm -e DB_NAME=superplane_test -v $(PWD)/tmp/screenshots:/app/test/screenshots app /bin/bash	
 
 #
 # Code formatting
