@@ -9,8 +9,6 @@ import (
 	"github.com/google/uuid"
 	log "github.com/sirupsen/logrus"
 	"github.com/superplanehq/superplane/pkg/authentication"
-	"github.com/superplanehq/superplane/pkg/authorization"
-	"github.com/superplanehq/superplane/pkg/crypto"
 	"github.com/superplanehq/superplane/pkg/database"
 	"github.com/superplanehq/superplane/pkg/grpc/actions/canvases/layout"
 	"github.com/superplanehq/superplane/pkg/grpc/actions/messages"
@@ -28,27 +26,17 @@ import (
 const ErrDuplicateCanvasName = "duplicate key value violates unique constraint"
 
 func CreateCanvas(ctx context.Context, registry *registry.Registry, organizationID string, pbCanvas *pb.Canvas) (*pb.CreateCanvasResponse, error) {
-	return CreateCanvasWithAutoLayout(ctx, registry, organizationID, pbCanvas, nil)
+	return createCanvasWithAutoLayout(ctx, registry, organizationID, pbCanvas, nil)
 }
 
-func CreateCanvasWithAutoLayout(
+func createCanvasWithAutoLayout(
 	ctx context.Context,
 	registry *registry.Registry,
 	organizationID string,
 	pbCanvas *pb.Canvas,
 	autoLayout *pb.CanvasAutoLayout,
 ) (*pb.CreateCanvasResponse, error) {
-	return CreateCanvasWithAutoLayoutAndUsageAndSetup(
-		ctx,
-		nil,
-		nil,
-		registry,
-		organizationID,
-		pbCanvas,
-		autoLayout,
-		"",
-		nil,
-	)
+	return CreateCanvasWithAutoLayoutAndUsage(ctx, nil, registry, organizationID, pbCanvas, autoLayout)
 }
 
 func CreateCanvasWithAutoLayoutAndUsage(
@@ -58,30 +46,6 @@ func CreateCanvasWithAutoLayoutAndUsage(
 	organizationID string,
 	pbCanvas *pb.Canvas,
 	autoLayout *pb.CanvasAutoLayout,
-) (*pb.CreateCanvasResponse, error) {
-	return CreateCanvasWithAutoLayoutAndUsageAndSetup(
-		ctx,
-		usageService,
-		nil,
-		registry,
-		organizationID,
-		pbCanvas,
-		autoLayout,
-		"",
-		nil,
-	)
-}
-
-func CreateCanvasWithAutoLayoutAndUsageAndSetup(
-	ctx context.Context,
-	usageService usage.Service,
-	encryptor crypto.Encryptor,
-	registry *registry.Registry,
-	organizationID string,
-	pbCanvas *pb.Canvas,
-	autoLayout *pb.CanvasAutoLayout,
-	webhookBaseURL string,
-	authService authorization.Authorization,
 ) (*pb.CreateCanvasResponse, error) {
 	userID, ok := authentication.GetUserIdFromMetadata(ctx)
 	if !ok {
@@ -169,7 +133,6 @@ func CreateCanvasWithAutoLayoutAndUsageAndSetup(
 		UpdatedAt:               &now,
 	}
 
-	organizationUUID := uuid.MustParse(organizationID)
 	err = database.Conn().Transaction(func(tx *gorm.DB) error {
 
 		//
@@ -186,17 +149,11 @@ func CreateCanvasWithAutoLayoutAndUsageAndSetup(
 		//
 		// Create the workflow node records (including internal blueprint nodes)
 		//
+		// Canvas creation persists validated nodes but defers runtime setup.
 		if err := createCanvasNodesInTransaction(
-			ctx,
 			tx,
-			false,
-			encryptor,
-			registry,
-			organizationUUID,
 			canvas.ID,
 			expandedNodes,
-			authService,
-			webhookBaseURL,
 		); err != nil {
 			return err
 		}
@@ -258,24 +215,15 @@ func createCanvasResponse(canvas *models.Canvas, creatorOrganizationID string) (
 }
 
 func createCanvasNodesInTransaction(
-	ctx context.Context,
 	tx *gorm.DB,
-	allowSetup bool,
-	encryptor crypto.Encryptor,
-	reg *registry.Registry,
-	organizationUUID uuid.UUID,
 	canvasID uuid.UUID,
 	nodes []models.Node,
-	authService authorization.Authorization,
-	webhookBaseURL string,
 ) error {
 	existingNodes := []models.CanvasNode{}
 	nodesByID := make(map[string]*models.Node, len(nodes))
 	for i := range nodes {
 		nodesByID[nodes[i].ID] = &nodes[i]
 	}
-
-	canSetupNodes := allowSetup && encryptor != nil && authService != nil
 
 	for _, node := range nodes {
 		canvasNode, nodeLevelErrorMessage, err := upsertNode(tx, existingNodes, node, canvasID)
@@ -286,21 +234,6 @@ func createCanvasNodesInTransaction(
 		if nodeLevelErrorMessage != nil {
 			setParentNodeError(canvasNode, node.ID, nodesByID, nodeLevelErrorMessage)
 		}
-		syncCreatedCanvasNode(nodesByID, canvasNode)
-
-		if !canSetupNodes || canvasNode.State != models.CanvasNodeStateReady {
-			continue
-		}
-
-		if err := setupNode(ctx, tx, encryptor, reg, canvasNode, organizationUUID, authService, webhookBaseURL); err != nil {
-			if saveErr := markNodeSetupError(tx, canvasNode, err); saveErr != nil {
-				return saveErr
-			}
-
-			errorMsg := err.Error()
-			setParentNodeError(canvasNode, node.ID, nodesByID, &errorMsg)
-		}
-
 		syncCreatedCanvasNode(nodesByID, canvasNode)
 	}
 
