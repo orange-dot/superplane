@@ -51,7 +51,7 @@ func (t *OnDeploymentEvent) Documentation() string {
 
 - Uses one shared cluster exporter
 - Filters one Deployment in one namespace at the trigger level
-- Receives exporter events over a SuperPlane webhook URL
+- Receives exporter events over the shared SuperPlane webhook URL for this integration
 - Emits normalized deployment payloads as ` + "`kubernetes.deployment.event`" + `
 - Filters by event mode (` + "`any_change`" + `, ` + "`rollout_completed`" + `, or ` + "`rollout_failed`" + `)
 
@@ -63,7 +63,7 @@ func (t *OnDeploymentEvent) Documentation() string {
 
 ## Exporter setup
 
-Save the trigger to generate the webhook URL and Helm install snippet. Install one exporter into the target cluster with that webhook URL and the same shared secret configured on the integration. Additional trigger nodes can reuse the same exporter install.`
+Save the trigger to display the shared cluster webhook URL and Helm install snippet. Install one exporter into the target cluster with that shared webhook URL and the same shared secret configured on the integration. Additional trigger nodes on the same integration reuse the exact same exporter install.`
 }
 
 func (t *OnDeploymentEvent) Icon() string {
@@ -122,6 +122,10 @@ func (t *OnDeploymentEvent) Setup(ctx core.TriggerContext) error {
 		return err
 	}
 
+	if ctx.Integration == nil {
+		return fmt.Errorf("connect the Kubernetes integration to this trigger")
+	}
+
 	integrationConfig, err := parseIntegrationConfiguration(ctx.Integration)
 	if err != nil {
 		return err
@@ -131,25 +135,28 @@ func (t *OnDeploymentEvent) Setup(ctx core.TriggerContext) error {
 		return fmt.Errorf("missing webhook context")
 	}
 
-	webhookURL, err := ctx.Webhook.Setup()
-	if err != nil {
-		return fmt.Errorf("failed to setup webhook URL: %w", err)
+	if _, err := ctx.Integration.Subscribe(map[string]any{
+		"type": onDeploymentEventSubscriptionType,
+	}); err != nil {
+		return fmt.Errorf("failed to subscribe to deployment events: %w", err)
 	}
 
-	if err := ctx.Webhook.SetSecret([]byte(integrationConfig.SharedSecret)); err != nil {
-		return fmt.Errorf("failed to store webhook secret: %w", err)
-	}
+	integrationMetadata := resolveKubernetesIntegrationMetadata(
+		ctx.Integration,
+		ctx.Webhook.GetBaseURL(),
+		integrationConfig,
+	)
 
 	metadata := OnDeploymentEventMetadata{
-		ClusterName:            integrationConfig.ClusterName,
+		ClusterName:            integrationMetadata.ClusterName,
 		Namespace:              config.Namespace,
 		DeploymentName:         config.DeploymentName,
 		EventMode:              config.EventMode,
-		WebhookURL:             webhookURL,
-		ExporterURL:            integrationConfig.ExporterURL,
-		SharedSecretConfigured: integrationConfig.SharedSecret != "",
-		HelmInstallCommand:     buildHelmInstallCommand(integrationConfig.ClusterName, webhookURL),
-		HelmValuesSnippet:      buildHelmValuesSnippet(integrationConfig.ClusterName, webhookURL),
+		WebhookURL:             integrationMetadata.WebhookURL,
+		ExporterURL:            integrationMetadata.ExporterURL,
+		SharedSecretConfigured: integrationMetadata.SharedSecretConfigured,
+		HelmInstallCommand:     integrationMetadata.HelmInstallCommand,
+		HelmValuesSnippet:      integrationMetadata.HelmValuesSnippet,
 	}
 
 	if ctx.Metadata == nil {
@@ -182,19 +189,25 @@ func (t *OnDeploymentEvent) HandleWebhook(ctx core.WebhookRequestContext) (int, 
 		return http.StatusBadRequest, nil, fmt.Errorf("failed to parse deployment event: %w", err)
 	}
 
-	if strings.TrimSpace(payload.Namespace) != config.Namespace || strings.TrimSpace(payload.DeploymentName) != config.DeploymentName {
-		return http.StatusOK, nil, nil
-	}
-
-	if !matchesEventMode(config.EventMode, payload.EventMode) {
-		return http.StatusOK, nil, nil
-	}
-
-	if err := ctx.Events.Emit(KubernetesDeploymentEventPayloadType, payload); err != nil {
+	if err := emitDeploymentEventIfMatches(config, payload, ctx.Events); err != nil {
 		return http.StatusInternalServerError, nil, fmt.Errorf("failed to emit deployment event: %w", err)
 	}
 
 	return http.StatusOK, nil, nil
+}
+
+func (t *OnDeploymentEvent) OnIntegrationMessage(ctx core.IntegrationMessageContext) error {
+	config, err := parseOnDeploymentEventConfiguration(ctx.Configuration)
+	if err != nil {
+		return err
+	}
+
+	payload, err := decodeDeploymentEventMessage(ctx.Message)
+	if err != nil {
+		return err
+	}
+
+	return emitDeploymentEventIfMatches(config, payload, ctx.Events)
 }
 
 func (t *OnDeploymentEvent) Cleanup(ctx core.TriggerContext) error {
@@ -288,6 +301,70 @@ func matchesEventMode(configured string, received string) bool {
 	}
 
 	return configured == received
+}
+
+func emitDeploymentEventIfMatches(
+	config OnDeploymentEventConfiguration,
+	payload DeploymentEventPayload,
+	events core.EventContext,
+) error {
+	if strings.TrimSpace(payload.Namespace) != config.Namespace || strings.TrimSpace(payload.DeploymentName) != config.DeploymentName {
+		return nil
+	}
+
+	if !matchesEventMode(config.EventMode, payload.EventMode) {
+		return nil
+	}
+
+	return events.Emit(KubernetesDeploymentEventPayloadType, payload)
+}
+
+func decodeDeploymentEventMessage(message any) (DeploymentEventPayload, error) {
+	switch payload := message.(type) {
+	case DeploymentEventPayload:
+		return payload, nil
+	case *DeploymentEventPayload:
+		if payload == nil {
+			return DeploymentEventPayload{}, fmt.Errorf("unexpected nil deployment event payload")
+		}
+		return *payload, nil
+	default:
+		decoded := DeploymentEventPayload{}
+		if err := mapstructure.Decode(message, &decoded); err != nil {
+			return DeploymentEventPayload{}, fmt.Errorf("unexpected deployment event type: %T", message)
+		}
+		return decoded, nil
+	}
+}
+
+func resolveKubernetesIntegrationMetadata(
+	integration core.IntegrationContext,
+	baseURL string,
+	config IntegrationConfiguration,
+) IntegrationMetadata {
+	metadata := IntegrationMetadata{}
+	_ = mapstructure.Decode(integration.GetMetadata(), &metadata)
+
+	if strings.TrimSpace(metadata.ClusterName) != "" &&
+		strings.TrimSpace(metadata.WebhookURL) != "" &&
+		strings.TrimSpace(metadata.HelmInstallCommand) != "" &&
+		strings.TrimSpace(metadata.HelmValuesSnippet) != "" {
+		return metadata
+	}
+
+	canonical := buildIntegrationMetadata(baseURL, integration.ID(), config)
+	canonical.ExporterReachable = metadata.ExporterReachable
+	return canonical
+}
+
+func onDeploymentEventSubscriptionApplies(subscription core.IntegrationSubscriptionContext) bool {
+	configMap, ok := subscription.Configuration().(map[string]any)
+	if !ok {
+		return false
+	}
+
+	subscriptionType, _ := configMap["type"].(string)
+	return subscriptionType == onDeploymentEventSubscriptionType
 }
 
 func buildHelmInstallCommand(clusterName string, webhookURL string) string {
