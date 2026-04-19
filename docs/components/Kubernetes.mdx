@@ -1,0 +1,117 @@
+---
+title: "Kubernetes"
+---
+
+Connect a Kubernetes cluster through a small in-cluster exporter.
+
+import { CardGrid, LinkCard } from "@astrojs/starlight/components";
+
+## Triggers
+
+<CardGrid>
+  <LinkCard title="On Deployment Event" href="#on-deployment-event" description="Trigger when the in-cluster exporter reports a Deployment change" />
+</CardGrid>
+
+## Actions
+
+<CardGrid>
+  <LinkCard title="Restart Rollout" href="#restart-rollout" description="Request a rollout restart for a Kubernetes Deployment" />
+</CardGrid>
+
+## Instructions
+
+### Connection
+
+Configure this integration with:
+- **Cluster Name**: A human-readable label for the target cluster
+- **Shared Secret**: A secret used by the exporter to authenticate deployment events and restart commands
+- **Exporter Base URL** (optional): A URL SuperPlane can call for rollout restarts and health checks
+
+### Exporter-first setup
+
+This integration expects a small exporter to run inside the target cluster.
+
+1. Create the integration in SuperPlane with a cluster name and shared secret.
+2. Add an **On Deployment Event** trigger to generate the webhook URL and Helm install snippet.
+3. Install one exporter per cluster with that webhook URL and the same shared secret.
+4. Add as many `namespace + deploymentName` triggers as needed; SuperPlane filters the shared exporter event stream per node.
+5. If you want the **Restart Rollout** action, expose the exporter with a reachable URL and paste that URL into **Exporter Base URL**.
+
+<a id="on-deployment-event"></a>
+
+## On Deployment Event
+
+The On Deployment Event trigger starts a workflow execution when the Kubernetes exporter reports a Deployment change.
+
+### What this trigger does
+
+- Uses one shared cluster exporter
+- Filters one Deployment in one namespace at the trigger level
+- Receives exporter events over a SuperPlane webhook URL
+- Emits normalized deployment payloads as `kubernetes.deployment.event`
+- Filters by event mode (`any_change`, `rollout_completed`, or `rollout_failed`)
+
+### Configuration
+
+- **Namespace**: Namespace containing the target Deployment
+- **Deployment Name**: Name of the target Deployment
+- **Event Mode**: Which exporter events should emit workflow executions
+
+### Example Data
+
+```json
+{
+  "data": {
+    "availableReplicas": 3,
+    "clusterName": "production-eu-1",
+    "deploymentName": "checkout-api",
+    "desiredReplicas": 3,
+    "eventMode": "rollout_completed",
+    "generation": 7,
+    "message": "Deployment has successfully progressed.",
+    "namespace": "payments",
+    "observedGeneration": 7,
+    "readyReplicas": 3,
+    "reason": "NewReplicaSetAvailable",
+    "resourceVersion": "182993",
+    "rolloutState": "completed",
+    "timestamp": "2026-04-19T18:00:00Z",
+    "unavailableReplicas": 0,
+    "updatedReplicas": 3
+  },
+  "timestamp": "2026-04-19T18:00:00Z",
+  "type": "kubernetes.deployment.event"
+}
+```
+
+<a id="restart-rollout"></a>
+
+## Restart Rollout
+
+The Restart Rollout component asks the Kubernetes exporter to patch a Deployment with the standard `kubectl.kubernetes.io/restartedAt` annotation.
+
+### Configuration
+
+- **Namespace**: Namespace containing the target Deployment
+- **Deployment Name**: Name of the Deployment to restart
+
+### Requirements
+
+- The Kubernetes integration must have a reachable **Exporter Base URL**
+- The in-cluster exporter must have permission to patch Deployments
+
+### Example Output
+
+```json
+{
+  "data": {
+    "clusterName": "production-eu-1",
+    "deploymentName": "checkout-api",
+    "namespace": "payments",
+    "restartedAt": "2026-04-19T18:05:00Z",
+    "status": "requested"
+  },
+  "timestamp": "2026-04-19T18:05:00Z",
+  "type": "kubernetes.deployment.restart"
+}
+```

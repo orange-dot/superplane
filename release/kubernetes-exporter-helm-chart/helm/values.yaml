@@ -1,0 +1,23 @@
+image:
+  repository: ghcr.io/superplanehq/kubernetes-exporter
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 8080
+
+watch:
+  clusterName: kubernetes-cluster
+  namespace: ""
+  pollInterval: 15s
+
+superplane:
+  webhookUrl: ""
+  sharedSecret: ""
+
+serviceAccount:
+  create: true
+  name: ""
+
+resources: {}

@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "superplane-kubernetes-exporter.fullname" . }}
+  labels:
+    app.kubernetes.io/name: {{ include "superplane-kubernetes-exporter.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "superplane-kubernetes-exporter.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "superplane-kubernetes-exporter.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      serviceAccountName: {{ include "superplane-kubernetes-exporter.serviceAccountName" . }}
+      containers:
+        - name: kubernetes-exporter
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: WATCH_CLUSTER_NAME
+              value: {{ .Values.watch.clusterName | quote }}
+            - name: WATCH_NAMESPACE
+              value: {{ .Values.watch.namespace | quote }}
+            - name: POLL_INTERVAL
+              value: {{ .Values.watch.pollInterval | quote }}
+            - name: SUPERPLANE_WEBHOOK_URL
+              value: {{ .Values.superplane.webhookUrl | quote }}
+            - name: SUPERPLANE_SHARED_SECRET
+              value: {{ .Values.superplane.sharedSecret | quote }}
+            - name: LISTEN_ADDR
+              value: ":8080"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          resources:
+{{ toYaml .Values.resources | indent 12 }}
