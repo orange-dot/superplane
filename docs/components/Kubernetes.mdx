@@ -32,8 +32,8 @@ Configure this integration with:
 This integration expects a small exporter to run inside the target cluster.
 
 1. Create the integration in SuperPlane with a cluster name and shared secret.
-2. Add an **On Deployment Event** trigger to generate the webhook URL and Helm install snippet.
-3. Install one exporter per cluster with that webhook URL and the same shared secret.
+2. Add an **On Deployment Event** trigger to configure `namespace + deploymentName` filtering and display the shared webhook URL and Helm install snippet.
+3. Install one exporter per cluster with that shared webhook URL and the same shared secret.
 4. Add as many `namespace + deploymentName` triggers as needed; SuperPlane filters the shared exporter event stream per node.
 5. If you want the **Restart Rollout** action, expose the exporter with a reachable URL and paste that URL into **Exporter Base URL**.
 
@@ -47,7 +47,7 @@ The On Deployment Event trigger starts a workflow execution when the Kubernetes 
 
 - Uses one shared cluster exporter
 - Filters one Deployment in one namespace at the trigger level
-- Receives exporter events over a SuperPlane webhook URL
+- Receives exporter events over the shared SuperPlane webhook URL for this integration
 - Emits normalized deployment payloads as `kubernetes.deployment.event`
 - Filters by event mode (`any_change`, `rollout_completed`, or `rollout_failed`)
 

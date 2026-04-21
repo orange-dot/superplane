@@ -10,6 +10,10 @@ describe("integrationDisplayName", () => {
     expect(getIntegrationTypeDisplayName("Linear", "linear")).toBe("Linear");
   });
 
+  it("normalizes kubernetes display names", () => {
+    expect(getIntegrationTypeDisplayName(undefined, "kubernetes")).toBe("Kubernetes");
+  });
+
   it("capitalizes unknown names when the label is missing", () => {
     expect(getIntegrationTypeDisplayName(undefined, "customtool")).toBe("Customtool");
   });

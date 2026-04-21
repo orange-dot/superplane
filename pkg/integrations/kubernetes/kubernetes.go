@@ -1,9 +1,13 @@
 package kubernetes
 
 import (
+	"crypto/subtle"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/mitchellh/mapstructure"
 	"github.com/superplanehq/superplane/pkg/configuration"
 	"github.com/superplanehq/superplane/pkg/core"
@@ -14,6 +18,8 @@ const (
 	KubernetesDeploymentEventPayloadType   = "kubernetes.deployment.event"
 	KubernetesDeploymentRestartPayloadType = "kubernetes.deployment.restart"
 	integrationSharedSecretName            = "sharedSecret"
+	onDeploymentEventSubscriptionType      = "kubernetes.onDeploymentEvent"
+	apiBasePath                            = "/api/v1"
 
 	EventModeAnyChange        = "any_change"
 	EventModeRolloutCompleted = "rollout_completed"
@@ -37,6 +43,9 @@ type IntegrationMetadata struct {
 	ExporterURL            string `json:"exporterURL,omitempty" mapstructure:"exporterURL"`
 	SharedSecretConfigured bool   `json:"sharedSecretConfigured" mapstructure:"sharedSecretConfigured"`
 	ExporterReachable      bool   `json:"exporterReachable" mapstructure:"exporterReachable"`
+	WebhookURL             string `json:"webhookUrl" mapstructure:"webhookUrl"`
+	HelmInstallCommand     string `json:"helmInstallCommand" mapstructure:"helmInstallCommand"`
+	HelmValuesSnippet      string `json:"helmValuesSnippet" mapstructure:"helmValuesSnippet"`
 }
 
 type DeploymentEventPayload struct {
@@ -100,8 +109,8 @@ Configure this integration with:
 This integration expects a small exporter to run inside the target cluster.
 
 1. Create the integration in SuperPlane with a cluster name and shared secret.
-2. Add an **On Deployment Event** trigger to generate the webhook URL and Helm install snippet.
-3. Install one exporter per cluster with that webhook URL and the same shared secret.
+2. Add an **On Deployment Event** trigger to configure ` + "`namespace + deploymentName`" + ` filtering and reveal the shared webhook URL and Helm install snippet.
+3. Install one exporter per cluster with that shared webhook URL and the same shared secret.
 4. Add as many ` + "`namespace + deploymentName`" + ` triggers as needed; SuperPlane filters the shared event stream per node.
 5. If you want the **Restart Rollout** action, expose the exporter with a reachable URL and paste that URL into **Exporter Base URL**.
 
@@ -162,14 +171,10 @@ func (k *Kubernetes) Sync(ctx core.SyncContext) error {
 		return err
 	}
 
-	metadata := IntegrationMetadata{
-		ClusterName:            strings.TrimSpace(config.ClusterName),
-		ExporterURL:            strings.TrimSpace(config.ExporterURL),
-		SharedSecretConfigured: strings.TrimSpace(config.SharedSecret) != "",
-		ExporterReachable:      false,
-	}
+	metadata := buildIntegrationMetadata(ctx.WebhooksBaseURL, ctx.Integration.ID(), config)
+	metadata.ExporterReachable = false
 
-	if err := ctx.Integration.SetSecret(integrationSharedSecretName, []byte(strings.TrimSpace(config.SharedSecret))); err != nil {
+	if err := storeIntegrationSharedSecret(ctx.Integration, config.SharedSecret); err != nil {
 		return fmt.Errorf("failed to store shared secret: %w", err)
 	}
 
@@ -226,6 +231,37 @@ func parseIntegrationConfiguration(integration core.IntegrationContext) (Integra
 	return config, nil
 }
 
+func buildIntegrationMetadata(baseURL string, integrationID uuid.UUID, config IntegrationConfiguration) IntegrationMetadata {
+	webhookURL := buildSharedWebhookURL(baseURL, integrationID)
+
+	return IntegrationMetadata{
+		ClusterName:            strings.TrimSpace(config.ClusterName),
+		ExporterURL:            strings.TrimSpace(config.ExporterURL),
+		SharedSecretConfigured: strings.TrimSpace(config.SharedSecret) != "",
+		WebhookURL:             webhookURL,
+		HelmInstallCommand:     buildHelmInstallCommand(strings.TrimSpace(config.ClusterName), webhookURL),
+		HelmValuesSnippet:      buildHelmValuesSnippet(strings.TrimSpace(config.ClusterName), webhookURL),
+	}
+}
+
+func storeIntegrationSharedSecret(integration core.IntegrationContext, sharedSecret string) error {
+	trimmed := strings.TrimSpace(sharedSecret)
+	if trimmed == "" {
+		return fmt.Errorf("sharedSecret is required")
+	}
+
+	return integration.SetSecret(integrationSharedSecretName, []byte(trimmed))
+}
+
+func buildSharedWebhookURL(baseURL string, integrationID uuid.UUID) string {
+	apiBaseURL := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if apiBaseURL != "" && !strings.HasSuffix(apiBaseURL, apiBasePath) {
+		apiBaseURL += apiBasePath
+	}
+
+	return fmt.Sprintf("%s/integrations/%s/events", apiBaseURL, integrationID.String())
+}
+
 func resolveIntegrationSharedSecret(integration core.IntegrationContext) (string, error) {
 	secrets, err := integration.GetSecrets()
 	if err == nil {
@@ -251,6 +287,10 @@ func resolveIntegrationSharedSecret(integration core.IntegrationContext) (string
 		return "", fmt.Errorf("sharedSecret is required")
 	}
 
+	if err := integration.SetSecret(integrationSharedSecretName, []byte(trimmed)); err != nil {
+		return "", fmt.Errorf("failed to store shared secret: %w", err)
+	}
+
 	return trimmed, nil
 }
 
@@ -271,4 +311,55 @@ func (k *Kubernetes) ListResources(resourceType string, ctx core.ListResourcesCo
 }
 
 func (k *Kubernetes) HandleRequest(ctx core.HTTPRequestContext) {
+	if !strings.HasSuffix(ctx.Request.URL.Path, "/events") {
+		ctx.Response.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	if ctx.Request.Method != http.MethodPost {
+		ctx.Response.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	secret, err := resolveIntegrationSharedSecret(ctx.Integration)
+	if err != nil {
+		http.Error(ctx.Response, err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	authorization := strings.TrimSpace(ctx.Request.Header.Get("Authorization"))
+	if !strings.HasPrefix(authorization, "Bearer ") {
+		http.Error(ctx.Response, "missing bearer authorization", http.StatusUnauthorized)
+		return
+	}
+
+	token := strings.TrimSpace(strings.TrimPrefix(authorization, "Bearer "))
+	if token == "" || subtle.ConstantTimeCompare([]byte(token), []byte(secret)) != 1 {
+		http.Error(ctx.Response, "invalid bearer authorization", http.StatusUnauthorized)
+		return
+	}
+
+	payload := DeploymentEventPayload{}
+	if err := json.NewDecoder(ctx.Request.Body).Decode(&payload); err != nil {
+		http.Error(ctx.Response, "failed to parse deployment event", http.StatusBadRequest)
+		return
+	}
+
+	subscriptions, err := ctx.Integration.ListSubscriptions()
+	if err != nil {
+		http.Error(ctx.Response, "failed to list subscriptions", http.StatusInternalServerError)
+		return
+	}
+
+	for _, subscription := range subscriptions {
+		if !onDeploymentEventSubscriptionApplies(subscription) {
+			continue
+		}
+
+		if err := subscription.SendMessage(payload); err != nil {
+			ctx.Logger.Errorf("failed to route deployment event to subscription: %v", err)
+		}
+	}
+
+	ctx.Response.WriteHeader(http.StatusOK)
 }

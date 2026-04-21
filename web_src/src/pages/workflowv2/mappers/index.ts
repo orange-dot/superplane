@@ -219,6 +219,12 @@ import {
   eventStateRegistry as honeycombEventStateRegistry,
 } from "./honeycomb/index";
 import {
+  componentMappers as kubernetesComponentMappers,
+  customFieldRenderers as kubernetesCustomFieldRenderers,
+  triggerRenderers as kubernetesTriggerRenderers,
+  eventStateRegistry as kubernetesEventStateRegistry,
+} from "./kubernetes/index";
+import {
   componentMappers as gcpComponentMappers,
   customFieldRenderers as gcpCustomFieldRenderers,
   triggerRenderers as gcpTriggerRenderers,
@@ -315,6 +321,7 @@ const appMappers: Record<string, Record<string, ComponentBaseMapper>> = {
   statuspage: statuspageComponentMappers,
   dockerhub: dockerhubComponentMappers,
   honeycomb: honeycombComponentMappers,
+  kubernetes: kubernetesComponentMappers,
   harness: harnessComponentMappers,
   servicenow: servicenowComponentMappers,
   elastic: elasticComponentMappers,
@@ -360,6 +367,7 @@ const appTriggerRenderers: Record<string, Record<string, TriggerRenderer>> = {
   statuspage: statuspageTriggerRenderers,
   dockerhub: dockerhubTriggerRenderers,
   honeycomb: honeycombTriggerRenderers,
+  kubernetes: kubernetesTriggerRenderers,
   harness: harnessTriggerRenderers,
   servicenow: servicenowTriggerRenderers,
   elastic: elasticTriggerRenderers,
@@ -404,6 +412,7 @@ const appEventStateRegistries: Record<string, Record<string, EventStateRegistry>
   jfrogArtifactory: jfrogArtifactoryEventStateRegistry,
   dockerhub: dockerhubEventStateRegistry,
   honeycomb: honeycombEventStateRegistry,
+  kubernetes: kubernetesEventStateRegistry,
   harness: harnessEventStateRegistry,
   servicenow: servicenowEventStateRegistry,
   elastic: elasticEventStateRegistry,
@@ -433,6 +442,7 @@ const appCustomFieldRenderers: Record<string, Record<string, CustomFieldRenderer
   newrelic: newrelicCustomFieldRenderers,
   prometheus: prometheusCustomFieldRenderers,
   dockerhub: dockerhubCustomFieldRenderers,
+  kubernetes: kubernetesCustomFieldRenderers,
   incident: incidentCustomFieldRenderers,
   gcp: gcpCustomFieldRenderers,
   servicenow: servicenowCustomFieldRenderers,
